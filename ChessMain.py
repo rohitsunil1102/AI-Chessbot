@@ -38,7 +38,7 @@ def main():
     sqSelected = () # no square initially selected (row,col)
     playerClicks = [] # keeps track of player clicks (2 tuples)
     playerOne = True # If a human is playing white -> True
-    playerTwo = True # same concept for black
+    playerTwo = False # same concept for black
     currentScore = 0
     font = p.font.SysFont("Arial", 24, True, False)
     while running:
