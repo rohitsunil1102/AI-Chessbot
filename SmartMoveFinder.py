@@ -44,15 +44,17 @@ def findBestMove(gs, validMoves):
 def findBestMoveMinMax(gs,validMoves):
     global nextMove
     nextMove = None
-    findMoveMinMax(gs, validMoves, DEPTH, gs.whiteToMove)
-    return nextMove
+    score = findMoveMinMax(gs, validMoves, DEPTH, gs.whiteToMove)
+    return nextMove, score
 
 def findMoveMinMax(gs, validMoves, depth, whiteToMove):
     global nextMove
-    if depth == 0:
+    if gs.checkMate or gs.staleMate:
+        return scoreBoard(gs)
+    if depth <= 0:
         return scoreMaterial(gs.board)
     if whiteToMove:
-        maxScore = -CHECKMATE
+        maxScore = -CHECKMATE * 2
         for move in validMoves:
             gs.makeMove(move)
             nextMoves = gs.getValidMoves()
@@ -65,7 +67,7 @@ def findMoveMinMax(gs, validMoves, depth, whiteToMove):
         return maxScore
 
     else:
-        minScore = CHECKMATE
+        minScore = CHECKMATE * 2
         for move in validMoves:
             gs.makeMove(move)
             nextMoves = gs.getValidMoves()
