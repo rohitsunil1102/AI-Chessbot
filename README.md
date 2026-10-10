@@ -1,6 +1,6 @@
 # AI Chessbot
 
-A desktop chess game built with Python and Pygame. Play against a depth-2 minimax opponent or switch to the Stockfish chess engine. The board includes coordinate labels, an evaluation bar, and optional voice move input.
+A desktop chess game built with Python and Pygame. Play against a depth-2 minimax opponent or switch to the Stockfish chess engine. The board includes an evaluation bar, optional voice move input, move highlighting.
 
 ## Screenshots
 
