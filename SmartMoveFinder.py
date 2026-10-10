@@ -40,7 +40,6 @@ def findBestMove(gs, validMoves):
         gs.undoMove()
     return bestPlayerMove, opponentMinMaxScore
 
-# helper method to make first recursive call
 def findBestMoveMinMax(gs,validMoves):
     global nextMove
     nextMove = None
@@ -78,7 +77,7 @@ def findMoveMinMax(gs, validMoves, depth, whiteToMove):
                     nextMove = move
             gs.undoMove()
         return minScore
-# +ve score is good for white and reverse for black
+# Scores are positive for White and negative for Black.
 
 def scoreBoard(gs):
     if gs.checkMate:
@@ -97,8 +96,6 @@ def scoreBoard(gs):
             elif square[0] == "b":
                 score -= pieceScore[square[1]]
     return score
-# score the board based on material:
-
 def scoreMaterial(board):
     score = 0
     for row in board:

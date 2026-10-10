@@ -1,13 +1,13 @@
 
-# main driver file
-# used to handle user input
-# displays the current gamestate object.
-
 import pygame as p
+import queue
+import time
+import math
 import ChessEngine, SmartMoveFinder
 from StockfishEngine import StockfishEngine
+from VoiceMoveInput import VoiceMoveListener, findSpokenMove
 WIDTH = HEIGHT = 512
-DIMENSION = 8 # 8 x 8 board
+DIMENSION = 8
 SQ_SIZE = HEIGHT // DIMENSION
 MAX_FPS = 15
 IMAGES = {}
@@ -25,17 +25,14 @@ MUTED_TEXT = (163, 183, 211)
 ACCENT = (93, 207, 222)
 LIGHT_SQUARE = (190, 211, 237)
 DARK_SQUARE = (25, 54, 100)
+MIC_BUTTON_RECT = p.Rect(WINDOW_WIDTH - 61, STATUS_TOP + 7, 50, 38)
+RESTART_BUTTON_RECT = p.Rect(WINDOW_WIDTH - 105, STATUS_TOP + 7, 38, 38)
 
-
-# initialize a global dict of images. called only once in the main
 
 def loadImages():
     pieces = ["wp","wR","wN","wB","wK","wQ","bp","bR","bN","bB","bK","bQ"]
     for piece in pieces:
         IMAGES[piece] = p.transform.scale(p.image.load("images/"+piece+".png"),(SQ_SIZE,SQ_SIZE))
-    # image can be accesed by calling from IMAGES dict
-
-
 def chooseMode(screen, clock, font):
     titleFont = p.font.SysFont("Bahnschrift", 40, True)
     subtitleFont = p.font.SysFont("Segoe UI", 17)
@@ -127,15 +124,47 @@ def uciToMove(uci, validMoves):
             return move
     return None
 
-#The main driver
-#will ahndle user input and updating graphics
+
+def drawMicIcon(screen, rect, enabled):
+    centerX, centerY = rect.center
+    iconColor = NAVY if enabled else WHITE_TEXT
+    p.draw.rect(screen, iconColor, p.Rect(centerX - 4, centerY - 12, 8, 16), border_radius=4)
+    p.draw.lines(screen, iconColor, False, [
+        (centerX - 9, centerY - 4), (centerX - 9, centerY + 1),
+        (centerX - 7, centerY + 6), (centerX - 4, centerY + 9),
+        (centerX, centerY + 10), (centerX + 4, centerY + 9),
+        (centerX + 7, centerY + 6), (centerX + 9, centerY + 1),
+        (centerX + 9, centerY - 4),
+    ], 2)
+    p.draw.line(screen, iconColor, (centerX, centerY + 10), (centerX, centerY + 14), 2)
+    p.draw.line(screen, iconColor, (centerX - 5, centerY + 14), (centerX + 5, centerY + 14), 2)
+    if not enabled:
+        p.draw.line(screen, (255, 105, 117), (centerX - 14, centerY + 14), (centerX + 14, centerY - 14), 3)
+
+
+def drawRestartIcon(screen, rect):
+    centerX, centerY = rect.center
+    iconColor = WHITE_TEXT
+    p.draw.arc(
+        screen,
+        iconColor,
+        p.Rect(centerX - 10, centerY - 10, 20, 20),
+        math.radians(48),
+        math.radians(322),
+        2,
+    )
+    p.draw.polygon(screen, iconColor, [
+        (centerX + 3, centerY - 12),
+        (centerX + 12, centerY - 9),
+        (centerX + 5, centerY - 4),
+    ])
 
 def main():
     p.init()
     screen = p.display.set_mode((WINDOW_WIDTH, STATUS_TOP + 100))
     clock = p.time.Clock()
     screen.fill(NAVY)
-    loadImages() #only once befor while loop
+    loadImages()
     font = p.font.SysFont("Segoe UI", 24, True, False)
     mode = chooseMode(screen, clock, font)
     if mode is None:
@@ -165,40 +194,101 @@ def main():
             return
     gs = ChessEngine.GameState()
     validMoves = gs.getValidMoves() 
-    moveMade = False # flag variable for when a move is made
-    animate = False # flag variable for animations
+    moveMade = False
+    animate = False
     running = True
     gameOver = False
-    sqSelected = () # no square initially selected (row,col)
-    playerClicks = [] # keeps track of player clicks (2 tuples)
+    sqSelected = ()
+    playerClicks = []
     playerOne = True # If a human is playing white -> True
     playerTwo = False # same concept for black
     currentScore = 0
+    voiceListener = VoiceMoveListener()
+    micEnabled = False
+    micGeneration = voiceListener.generation
+    voiceStatus = "Voice moves off. Click the icon to enable."
+    voiceTurnStartedAt = time.monotonic()
     while running:
+        currentHumanTurn = (gs.whiteToMove and playerOne) or (not gs.whiteToMove and playerTwo)
+        if currentHumanTurn and voiceTurnStartedAt is None:
+            voiceTurnStartedAt = time.monotonic()
+        elif not currentHumanTurn:
+            voiceTurnStartedAt = None
+        while True:
+            try:
+                messageGeneration, messageType, messageText, capturedAt = voiceListener.messages.get_nowait()
+            except queue.Empty:
+                break
+            if messageGeneration != micGeneration or not micEnabled:
+                continue
+            if messageType == "status":
+                voiceStatus = messageText
+            elif messageType == "error":
+                voiceStatus = messageText
+                micEnabled = False
+                micGeneration = voiceListener.set_enabled(False)
+            elif messageType == "speech":
+                humanTurn = (gs.whiteToMove and playerOne) or (not gs.whiteToMove and playerTwo)
+                if gameOver:
+                    voiceStatus = "The game is over. Press R to restart."
+                elif not humanTurn:
+                    voiceStatus = "Wait for your turn before speaking a move."
+                elif voiceTurnStartedAt is None or capturedAt < voiceTurnStartedAt:
+                    voiceStatus = "That was heard outside your turn; move ignored."
+                else:
+                    spokenMove = findSpokenMove(messageText, validMoves)
+                    if spokenMove is None:
+                        voiceStatus = f"No unique legal move matched: {messageText[:35]}"
+                    else:
+                        gs.makeMove(spokenMove)
+                        animateMoves(gs.moveLog[-1], screen, gs.board, clock)
+                        validMoves = gs.getValidMoves()
+                        sqSelected = ()
+                        playerClicks = []
+                        voiceTurnStartedAt = None
+                        voiceStatus = f"Played {spokenMove.getChessNotation()}"
+
         for e in p.event.get():
             if e.type == p.QUIT:
                 running = False
-            # mouse handlers
             elif e.type == p.MOUSEBUTTONDOWN:
-                humanTurn = (gs.whiteToMove and playerOne) or (not gs.whiteToMove and playerTwo)
-                if not gameOver and humanTurn:
-                    location = p.mouse.get_pos() # (x,y) position of the mouse
+                if RESTART_BUTTON_RECT.collidepoint(e.pos):
+                    gs = ChessEngine.GameState()
+                    validMoves = gs.getValidMoves()
+                    sqSelected = ()
+                    playerClicks = []
+                    moveMade = False
+                    animate = False
+                    gameOver = False
+                    currentScore = 0
+                    voiceTurnStartedAt = time.monotonic()
+                    voiceStatus = "Game restarted. Say e two to e four." if micEnabled else "Game restarted."
+                elif MIC_BUTTON_RECT.collidepoint(e.pos):
+                    micEnabled = not micEnabled
+                    micGeneration = voiceListener.set_enabled(micEnabled)
+                    voiceStatus = "Starting voice control..." if micEnabled else "Voice moves off."
+                else:
+                    humanTurn = (gs.whiteToMove and playerOne) or (not gs.whiteToMove and playerTwo)
+                    if gameOver or not humanTurn:
+                        continue
+                    location = p.mouse.get_pos()
                     col = (location[0] - BOARD_LEFT)//SQ_SIZE
                     row = (location[1] - BOARD_TOP)//SQ_SIZE
                     if not (0 <= col < DIMENSION and 0 <= row < DIMENSION):
                         continue
-                    if sqSelected == (row, col): # same square selected
+                    if sqSelected == (row, col):
                         sqSelected = ()
                         playerClicks = []
                     else:
                         sqSelected = (row, col)
-                        playerClicks.append(sqSelected) # append both first and second clicks
-                    if len(playerClicks) == 2: # after second click
+                        playerClicks.append(sqSelected)
+                    if len(playerClicks) == 2:
                         move = ChessEngine.Move(playerClicks[0],playerClicks[1],gs.board)
                         for i in range(len(validMoves)):
                             if move == validMoves[i]:
                                 print(move.getChessNotation())
                                 gs.makeMove(validMoves[i])
+                                voiceTurnStartedAt = None
                                 moveMade = True
                                 animate = True
                                 sqSelected = ()
@@ -207,19 +297,23 @@ def main():
                             playerClicks = [sqSelected]
 
             elif e.type == p.KEYDOWN:
-                if e.key == p.K_z: # undo a move
+                if e.key == p.K_z:
                     gs.undoMove()
+                    voiceTurnStartedAt = time.monotonic() if gs.whiteToMove else None
                     moveMade = True
                     animate = False
                     gameOver = False
                 if e.key == p.K_r:
                     gs = ChessEngine.GameState()
+                    voiceTurnStartedAt = time.monotonic()
                     validMoves = gs.getValidMoves()
                     sqSelected = ()
                     playerClicks = []
                     moveMade = False
                     animate = False
                     gameOver = False
+                    currentScore = 0
+                    voiceStatus = "Game restarted. Say e two to e four." if micEnabled else "Game restarted."
             if moveMade:
                 if animate:
                     animateMoves(gs.moveLog[-1], screen, gs.board, clock)
@@ -248,21 +342,30 @@ def main():
 
         drawGameState(screen, gs, validMoves, sqSelected)
 
-        # display the score
-        screen.fill(NAVY, p.Rect(0, STATUS_TOP, WINDOW_WIDTH, 100))  # Clear the bottom area
+        screen.fill(NAVY, p.Rect(0, STATUS_TOP, WINDOW_WIDTH, 100))
         modeText = "Beginner / Depth 2" if mode == "beginner" else "Stockfish"
         scoreLabel = f"{currentScore:+.1f}" if mode == "stockfish" else str(currentScore)
         scoreText = font.render(f"{modeText}   Score: {scoreLabel}", True, WHITE_TEXT)
         screen.blit(scoreText, (10, STATUS_TOP + 10))
 
-        # Draw evaluation bar
+        micColor = ACCENT if micEnabled else CARD_HOVER
+        p.draw.rect(screen, micColor, MIC_BUTTON_RECT, border_radius=9)
+        p.draw.rect(screen, CARD_BORDER, MIC_BUTTON_RECT, 1, border_radius=9)
+        drawMicIcon(screen, MIC_BUTTON_RECT, micEnabled)
+        p.draw.rect(screen, CARD_HOVER, RESTART_BUTTON_RECT, border_radius=9)
+        p.draw.rect(screen, CARD_BORDER, RESTART_BUTTON_RECT, 1, border_radius=9)
+        drawRestartIcon(screen, RESTART_BUTTON_RECT)
+        voiceFont = p.font.SysFont("Segoe UI", 13)
+        voiceLabel = voiceFont.render(voiceStatus[:52], True, MUTED_TEXT)
+        screen.blit(voiceLabel, (10, STATUS_TOP + 39))
+
         evalBarHeight = 20
         evalBarWidth = WIDTH
-        evalBarTop = STATUS_TOP + 50
+        evalBarTop = STATUS_TOP + 66
         whiteEval = max(0, min(evalBarWidth, int((currentScore + 10) / 20 * evalBarWidth)))
         p.draw.rect(screen, LIGHT_SQUARE, p.Rect(BOARD_LEFT, evalBarTop, whiteEval, evalBarHeight))
         p.draw.rect(screen, DARK_SQUARE, p.Rect(BOARD_LEFT + whiteEval, evalBarTop, evalBarWidth - whiteEval, evalBarHeight))
-        p.draw.rect(screen, CARD_BORDER, p.Rect(BOARD_LEFT, evalBarTop, evalBarWidth, evalBarHeight), 1)  # Border
+        p.draw.rect(screen, CARD_BORDER, p.Rect(BOARD_LEFT, evalBarTop, evalBarWidth, evalBarHeight), 1)
 
 
         if gs.checkMate:
@@ -293,20 +396,16 @@ def main():
         p.display.flip()
     if engine:
         engine.close()
+    voiceListener.close()
     p.quit()
-#drawGameState() -> responsible for all the graphics in the current game state
-
-# highlight square selected and moves for the selected piece
 def highlightSquares(screen, gs, validMoves, sqSelected):
     if sqSelected != ():
         r, c = sqSelected
-        if gs.board[r][c][0] == ("w" if gs.whiteToMove else "b"): #sqSelected is a piece that can be moved
-            # highlight the selected square
+        if gs.board[r][c][0] == ("w" if gs.whiteToMove else "b"):
             s = p.Surface((SQ_SIZE,SQ_SIZE))
-            s.set_alpha(100) # 0 - 255(opaque)
+            s.set_alpha(100)
             s.fill(ACCENT)
             screen.blit(s, (BOARD_LEFT + c*SQ_SIZE, BOARD_TOP + r*SQ_SIZE))
-            # highlight moves from that square
             s.fill(p.Color((255, 207, 91)))
             for move in validMoves:
                 if move.startRow == r and move.startCol == c:
@@ -314,9 +413,9 @@ def highlightSquares(screen, gs, validMoves, sqSelected):
 
 
 def drawGameState(screen, gs, validMoves, sqSelected):
-    drawBoard(screen) #draw squares on the board
+    drawBoard(screen)
     highlightSquares(screen, gs, validMoves, sqSelected)
-    drawPieces(screen,gs.board) #draw pieces on the squares of the board
+    drawPieces(screen,gs.board)
 
 def drawBoard(screen):
     global colors
@@ -346,27 +445,22 @@ def drawPieces(screen,board):
             if piece != "--":
                 screen.blit(IMAGES[piece],p.Rect(BOARD_LEFT + c*SQ_SIZE,BOARD_TOP + r*SQ_SIZE,SQ_SIZE,SQ_SIZE))
 
-# animation of pieces and moves
-
 def animateMoves(move, screen, board, clock):
     global colors
-    coords = [] # list of columns
+    coords = []
     dR = move.endRow - move.startRow
     dC = move.endCol - move.startCol
-    framesforSquare = 10 # frames per square
+    framesforSquare = 10
     frameCount = (abs(dR) + abs(dC))*framesforSquare
     for frame in range(frameCount + 1):
         r, c = (move.startRow + dR*frame/frameCount, move.startCol + dC*frame/frameCount)
         drawBoard(screen)
         drawPieces(screen, board)
-        # erase piece moved from ending square
         color = colors[(move.endRow + move.endCol)%2]
         endSquare = p.Rect(BOARD_LEFT + move.endCol*SQ_SIZE,BOARD_TOP + move.endRow*SQ_SIZE,SQ_SIZE,SQ_SIZE)
         p.draw.rect(screen,color,endSquare)
-        # draw captured piece onto square
         if move.pieceCaptured != "--":
             screen.blit(IMAGES[move.pieceCaptured], endSquare)
-        # draw the moving piece
         screen.blit(IMAGES[move.pieceMove], p.Rect(BOARD_LEFT + c*SQ_SIZE,BOARD_TOP + r*SQ_SIZE,SQ_SIZE,SQ_SIZE))
         p.display.flip()
         clock.tick(120)
